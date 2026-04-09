@@ -1,0 +1,80 @@
+name: Build Ladybird (macOS arm64)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ladybird-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      BUILD_DIR: Build/release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Homebrew dependencies
+        shell: bash
+        run: |
+          brew update
+          brew install \
+            autoconf autoconf-archive automake \
+            ccache cmake libtool nasm ninja pkg-config \
+            llvm@21
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          source "$HOME/.cargo/env"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Export toolchain paths
+        shell: bash
+        run: |
+          echo "$(brew --prefix llvm@21)/bin" >> "$GITHUB_PATH"
+          echo "CC=$(brew --prefix llvm@21)/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$(brew --prefix llvm@21)/bin/clang++" >> "$GITHUB_ENV"
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/CMakeLists.txt', '**/CMakePresets.json', '**/vcpkg.json', '**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake --preset Release \
+            -B "$BUILD_DIR" \
+            -DCMAKE_C_COMPILER="$CC" \
+            -DCMAKE_CXX_COMPILER="$CXX" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLAGOM_LINK_POOL_SIZE=2
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build "$BUILD_DIR" --parallel
+
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-macOS-arm64
+          path: Build/release/bin/Ladybird.app
